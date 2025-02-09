@@ -1,8 +1,11 @@
 import { users, type User, type InsertUser, type UpdateProfile } from "@shared/schema";
-import createMemoryStore from "memorystore";
+import { db } from "./db";
+import { eq } from "drizzle-orm";
 import session from "express-session";
+import connectPg from "connect-pg-simple";
+import { pool } from "./db";
 
-const MemoryStore = createMemoryStore(session);
+const PostgresSessionStore = connectPg(session);
 
 export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
@@ -12,58 +15,48 @@ export interface IStorage {
   sessionStore: session.SessionStore;
 }
 
-export class MemStorage implements IStorage {
-  private users: Map<number, User>;
-  currentId: number;
+export class DatabaseStorage implements IStorage {
   sessionStore: session.SessionStore;
 
   constructor() {
-    this.users = new Map();
-    this.currentId = 1;
-    this.sessionStore = new MemoryStore({
-      checkPeriod: 86400000,
+    this.sessionStore = new PostgresSessionStore({
+      pool,
+      createTableIfMissing: true,
     });
   }
 
   async getUser(id: number): Promise<User | undefined> {
-    return this.users.get(id);
+    const [user] = await db.select().from(users).where(eq(users.id, id));
+    return user;
   }
 
   async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
+    const [user] = await db.select().from(users).where(eq(users.username, username));
+    return user;
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
-    const id = this.currentId++;
-    const user: User = { 
-      ...insertUser, 
-      id,
-      profilePicture: null,
-      signature: null,
-      firstName: null,
-      lastName: null,
-      email: null,
-      phone: null,
-      address: null,
-      employer: null,
-      position: null,
-      onboardingStatus: "pending",
-      additionalInfo: {}
-    };
-    this.users.set(id, user);
+    const [user] = await db
+      .insert(users)
+      .values({
+        ...insertUser,
+        onboardingStatus: "pending",
+        additionalInfo: {},
+      })
+      .returning();
     return user;
   }
 
   async updateProfile(id: number, profile: UpdateProfile): Promise<User> {
-    const user = await this.getUser(id);
+    const [user] = await db
+      .update(users)
+      .set(profile)
+      .where(eq(users.id, id))
+      .returning();
+
     if (!user) throw new Error("User not found");
-    
-    const updatedUser = { ...user, ...profile };
-    this.users.set(id, updatedUser);
-    return updatedUser;
+    return user;
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();
